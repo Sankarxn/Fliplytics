@@ -1,9 +1,43 @@
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'startScraping') {
+        createDebugOverlay();
+        updateDebugStatus("Starting scrape...");
         startScraping();
         sendResponse({ status: 'started' });
     }
 });
+
+let debugOverlay = null;
+
+function createDebugOverlay() {
+    if (document.getElementById('fliplytics-debug')) return;
+    const div = document.createElement('div');
+    div.id = 'fliplytics-debug';
+    div.style.cssText = `
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: #2874f0;
+        color: white;
+        padding: 16px;
+        border-radius: 8px;
+        z-index: 99999;
+        font-family: sans-serif;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        max-width: 300px;
+        font-size: 14px;
+    `;
+    div.innerHTML = `<strong>Fliplytics Sync</strong><br><span id="fliplytics-status">Initializing...</span>`;
+    document.body.appendChild(div);
+    debugOverlay = div;
+}
+
+function updateDebugStatus(text) {
+    if (!debugOverlay) createDebugOverlay();
+    const el = document.getElementById('fliplytics-status');
+    if (el) el.textContent = text;
+    console.log(`[Fliplytics] ${text}`);
+}
 
 async function startScraping() {
     let allOrders = [];
@@ -14,8 +48,22 @@ async function startScraping() {
     chrome.runtime.sendMessage({ action: 'scrapeStarted' });
 
     while (hasNext) {
+        updateDebugStatus(`Scraping Page ${page}...`);
+
+        // Wait a bit for dynamic content
+        await new Promise(r => setTimeout(r, 2000));
+
         // Scrape current page
-        const orders = parseOrders();
+        let orders = parseOrders();
+
+        // Fallback strategy if strict parsing fails
+        if (orders.length === 0) {
+            updateDebugStatus(`Page ${page}: Strict parse failed, trying fallback...`);
+            orders = parseOrdersFallback();
+        }
+
+        updateDebugStatus(`Page ${page}: Found ${orders.length} orders`);
+
         allOrders.push(...orders);
 
         // Notify progress
@@ -28,11 +76,13 @@ async function startScraping() {
         // Check for next button and click
         const nextBtn = findNextButton();
         if (nextBtn) {
+            updateDebugStatus(`Page ${page}: Clicking Next...`);
             nextBtn.click();
-            // Wait for load
-            await new Promise(r => setTimeout(r, 3000)); // Simple wait, ideally distinct wait
+            // Wait for load - using a smarter wait
+            await waitForNewOrders();
             page++;
         } else {
+            updateDebugStatus(`Page ${page}: No 'Next' button. Finishing.`);
             hasNext = false;
         }
     }
@@ -46,86 +96,143 @@ async function startScraping() {
         total: allOrders.length
     });
 
-    alert(`Flipcart Expenses: Scraped ${allOrders.length} orders! Check the dashboard.`);
+    updateDebugStatus(`Done! Scraped ${allOrders.length} orders.`);
+    setTimeout(() => {
+        if (debugOverlay) debugOverlay.remove();
+    }, 5000);
+
+    alert(`Fliplytics: Scraped ${allOrders.length} orders! Check the dashboard.`);
 }
 
 function parseOrders() {
     const orders = [];
-    // Flipkart Order Item Selector (Heuristic: Look for row-like structures)
-    // Common class for order row could vary. Let's look for standard structures.
-    // Usually each order is in a container.
-    // Try to find elements that contain "Delivery" or status text, then traverse up.
-
-    // Strategy: Look for the main order container class usually "_2teB7X" or similar is unstable.
-    // Let's rely on finding all elements that look like an order card.
-
-    // Try to find order items by class starting with 'row' or 'col' combined with price?
-    // Actually, on /account/orders, each order is a distinct block.
-
-    // Fallback: Use a broad selector and filter.
-    const orderCards = document.querySelectorAll('div[class*="row"]'); // Too broad?
-
-    // Better: Look for unique text like 'Rs' or '₹'
-    // Or inspect the DOM if we could. Since we can't, let's try a best-effort selector based on known Flipkart classes (which might be outdated) or generic structure.
-
-    // Current Flipkart Order Row Class (often encoded): 
-    // Usually they are in a list.
-    // Let's try locating by text relative positions.
-
-    // Iterate over all anchor tags that link to /order_details?
+    // Primary Strategy: a[href*="/order_details"]
     const orderLinks = Array.from(document.querySelectorAll('a[href*="/order_details"]'));
     const processedCards = new Set();
 
     orderLinks.forEach(link => {
-        // Find the designated card container
-        const card = link.closest('div'); // The immediate container
+        let card = link.closest('div[class*="row"]');
+        if (!card) card = link.closest('div._1AtVbE');
+        if (!card) card = link.closest('div');
+
         if (!card || processedCards.has(card)) return;
-        processedCards.add(card); // Avoid duplicates if multiple links in one card
+        if (!card.contains(link)) return;
 
-        try {
-            // Extract Date (Usually "Delivered on ...")
-            const statusNode = card.innerText.match(/Delivered on ([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
-            const dateStr = statusNode ? statusNode[1] : new Date().toDateString(); // Fallback
-
-            // Extract Price
-            const priceNode = card.innerText.match(/₹[\d,]+/);
-            const amount = priceNode ? parseFloat(priceNode[0].replace(/[₹,]/g, '')) : 0;
-
-            // Extract Name
-            // Usually the first substantial text in the card or the text inside the link
-            const name = link.innerText || "Unknown Product";
-
-            // Extract Image
-            const img = card.querySelector('img');
-            const image = img ? img.src : '';
-
-            // Extract Status
-            const textContent = card.innerText;
-            let status = 'Delivered';
-            if (textContent.includes('Cancelled')) status = 'Cancelled';
-            else if (textContent.includes('Returned')) status = 'Returned';
-            else if (textContent.includes('Refund')) status = 'Returned';
-
-            if (amount > 0) {
-                orders.push({
-                    id: Math.random().toString(36).substr(2, 9),
-                    date: dateStr,
-                    amount: amount,
-                    productName: name,
-                    imageUrl: image,
-                    status: status
-                });
-            }
-        } catch (e) {
-            console.error("Error parsing card", e);
-        }
+        processedCards.add(card);
+        const order = extractOrderFromCard(card, link);
+        if (order) orders.push(order);
     });
 
     return orders;
 }
 
+function parseOrdersFallback() {
+    // Fallback Strategy: Find elements looking like Prices (₹450) and assume they are in an order card
+    const orders = [];
+    // Look for text nodes starting with ₹
+    // This is expensive, so we scope it.
+    const candidates = Array.from(document.querySelectorAll('div, span'));
+    const processedCards = new Set();
+
+    candidates.forEach(el => {
+        if (el.children.length === 0 && el.innerText.includes('₹')) {
+            // Potential price node.
+            // Traverse up to find a "row" or container.
+            let card = el.closest('div[class*="row"]');
+            if (!card) return;
+
+            if (processedCards.has(card)) return;
+
+            // Check if it has "Delivered" or "Cancelled" or date
+            const text = card.innerText;
+            if (text.match(/(Delivered|Cancelled|Returned|Ordered) on/)) {
+                processedCards.add(card);
+                const order = extractOrderFromCard(card, null); // No link reference
+                if (order) orders.push(order);
+            }
+        }
+    });
+    return orders;
+}
+
+function extractOrderFromCard(card, link) {
+    try {
+        const textContent = card.innerText || "";
+
+        // Extract Price matches
+        const priceMatches = textContent.match(/₹([\d,]+)/g);
+        if (!priceMatches) return null;
+
+        // Assume the largest price is the total? Or the first?
+        // Usually order total is clear. Let's take the first one.
+        const amount = parseFloat(priceMatches[0].replace(/[₹,]/g, ''));
+
+        // Extract Status & Date
+        let status = 'Delivered';
+        let dateStr = "";
+
+        if (textContent.includes('Cancelled')) {
+            status = 'Cancelled';
+            const dateMatch = textContent.match(/Cancelled on ([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
+            dateStr = dateMatch ? dateMatch[1] : "";
+        } else if (textContent.includes('Returned') || textContent.includes('Refund')) {
+            status = 'Returned';
+            const dateMatch = textContent.match(/Returned on ([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
+            dateStr = dateMatch ? dateMatch[1] : "";
+        } else {
+            const dateMatch = textContent.match(/Delivered on ([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
+            dateStr = dateMatch ? dateMatch[1] : "";
+        }
+
+        if (!dateStr) {
+            const anyDate = textContent.match(/([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
+            dateStr = anyDate ? anyDate[1] : new Date().toDateString();
+        }
+
+        // Extract Name
+        let name = "Unknown Product";
+        if (link) {
+            name = link.innerText.trim();
+        } else {
+            // Try to find the title link manually
+            const titleLink = card.querySelector('a[href*="/order_details"]');
+            if (titleLink) name = titleLink.innerText.trim();
+            else {
+                // First non-empty text node?
+                const lines = textContent.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+                if (lines.length > 0) name = lines[0];
+            }
+        }
+        name = name.split('\n')[0];
+
+        // Extract Image
+        const img = card.querySelector('img');
+        const image = img ? img.src : '';
+
+        if (amount > 0) {
+            return {
+                id: Math.random().toString(36).substr(2, 9),
+                date: dateStr,
+                amount: amount,
+                productName: name,
+                imageUrl: image,
+                status: status
+            };
+        }
+    } catch (e) {
+        console.error("Error extracting order", e);
+    }
+    return null;
+}
+
 function findNextButton() {
-    // Look for a link with text "Next"
-    const links = Array.from(document.querySelectorAll('a, button'));
-    return links.find(el => el.innerText.includes('Next') || el.innerText.includes('NEXT'));
+    const anchors = Array.from(document.querySelectorAll('a'));
+    return anchors.find(el => {
+        const text = (el.innerText || "").toUpperCase();
+        return text.includes("NEXT");
+    });
+}
+
+async function waitForNewOrders() {
+    await new Promise(r => setTimeout(r, 4000));
 }

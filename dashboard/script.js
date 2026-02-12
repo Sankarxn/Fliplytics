@@ -249,8 +249,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log(`Page ${pageCount} orders found: ${orders.length}`);
 
                 if (orders.length === 0 && pageCount === 1) {
-                    // If Page 1 is empty, it might be an issue.
-                    // But we continue just in case.
+                    // Warning if page 1 is empty
+                    console.warn("Page 1 is empty. potentially layout change.");
                 }
 
                 allOrders.push(...orders);
@@ -258,12 +258,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 syncBtn.textContent = `Found ${allOrders.length} orders (Pg ${pageCount})`;
 
                 // Find Next Button
-                const nextBtn = Array.from(doc.querySelectorAll('a')).find(el => el.innerText && el.innerText.toUpperCase().includes('NEXT'));
+                // Look for 'Next' text in anchors
+                const nextBtn = Array.from(doc.querySelectorAll('a')).find(el => {
+                    const text = (el.textContent || "").toUpperCase();
+                    return text.includes("NEXT");
+                });
 
                 if (nextBtn && nextBtn.getAttribute('href')) {
                     nextUrl = 'https://www.flipkart.com' + nextBtn.getAttribute('href');
                     pageCount++;
-                    await new Promise(r => setTimeout(r, 1500));
+                    // Polite delay
+                    await new Promise(r => setTimeout(r, 2000));
                 } else {
                     nextUrl = null;
                 }
@@ -309,30 +314,40 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function parseOrdersFromDoc(doc) {
         const orders = [];
+        // Same logic as content.js but using doc and textContent
         const orderLinks = Array.from(doc.querySelectorAll('a[href*="/order_details"]'));
         const processedCards = new Set();
 
         orderLinks.forEach(link => {
-            let card = link.parentElement;
-            card = link.closest('div');
+            let card = link.closest('div[class*="row"]');
+            if (!card) card = link.closest('div._1AtVbE');
+            if (!card) card = link.closest('div');
 
             if (!card || processedCards.has(card)) return;
+            // Note: doc.contains might not work if doc is the document, but card is an element. 
+            // In DOMParser, card is inside doc.
+
             processedCards.add(card);
 
             try {
-                const textContent = card.innerText || card.textContent || "";
+                const textContent = card.textContent || "";
 
                 // Extract Date
                 const statusNode = textContent.match(/Delivered on ([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
                 const dateStr = statusNode ? statusNode[1] : null;
-                const finalDate = dateStr || new Date().toDateString(); // Default to today if unknown
 
                 // Extract Price
                 const priceNode = textContent.match(/₹[\d,]+/);
                 const amount = priceNode ? parseFloat(priceNode[0].replace(/[₹,]/g, '')) : 0;
 
                 // Extract Name
-                const name = link.innerText || "Unknown Product";
+                // Link text or internal span
+                let name = link.textContent.trim();
+                if (!name) {
+                    const span = link.querySelector('div, span');
+                    name = span ? span.textContent.trim() : "Unknown Product";
+                }
+                name = name.split('\n')[0];
 
                 // Extract Image
                 const img = card.querySelector('img');
@@ -343,6 +358,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (textContent.includes('Cancelled')) status = 'Cancelled';
                 else if (textContent.includes('Returned')) status = 'Returned';
                 else if (textContent.includes('Refund')) status = 'Returned';
+
+                // Final Date Logic
+                let finalDate = dateStr;
+                if (!finalDate) {
+                    if (status === 'Cancelled') {
+                        const d = textContent.match(/Cancelled on ([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
+                        if (d) finalDate = d[1];
+                    } else if (status === 'Returned') {
+                        const d = textContent.match(/Returned on ([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
+                        if (d) finalDate = d[1];
+                    }
+                }
+                if (!finalDate) {
+                    const anyDate = textContent.match(/([A-Za-z]{3} \d{1,2}(?:, \d{4})?)/);
+                    finalDate = anyDate ? anyDate[1] : new Date().toDateString();
+                }
 
                 if (amount > 0) {
                     orders.push({
@@ -356,6 +387,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } catch (e) {
                 // Ignore
+                console.error("Parse error", e);
             }
         });
         return orders;
