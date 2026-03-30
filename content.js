@@ -226,11 +226,23 @@ function extractOrderFromCard(card, link) {
 }
 
 function findNextButton() {
-    const anchors = Array.from(document.querySelectorAll('a'));
-    return anchors.find(el => {
-        const text = (el.innerText || "").toUpperCase();
-        return text.includes("NEXT");
+    const anchors = Array.from(document.querySelectorAll('a, button'));
+    // Look for elements with "NEXT" in their text
+    let nextBtn = anchors.find(el => {
+        const text = (el.innerText || el.textContent || "").toUpperCase().trim();
+        return text === "NEXT" || text.includes("NEXT");
     });
+    
+    // Fallback: specifically text nodes inside spans
+    if (!nextBtn) {
+        const spans = Array.from(document.querySelectorAll('span'));
+        const nextSpan = spans.find(span => (span.innerText || "").toUpperCase().trim() === "NEXT");
+        if (nextSpan) {
+            nextBtn = nextSpan.closest('a') || nextSpan.closest('button') || nextSpan;
+        }
+    }
+    
+    return nextBtn;
 }
 
 async function waitForNewOrders() {

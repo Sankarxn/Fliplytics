@@ -64,7 +64,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Initial Load
-    // loadData();
+    loadData();
 
     // Event Listeners
     syncBtn.addEventListener('click', handleSync);
@@ -258,14 +258,31 @@ document.addEventListener('DOMContentLoaded', async () => {
                 syncBtn.textContent = `Found ${allOrders.length} orders (Pg ${pageCount})`;
 
                 // Find Next Button
-                // Look for 'Next' text in anchors
-                const nextBtn = Array.from(doc.querySelectorAll('a')).find(el => {
-                    const text = (el.textContent || "").toUpperCase();
-                    return text.includes("NEXT");
+                let nextBtn = Array.from(doc.querySelectorAll('a, button')).find(el => {
+                    const text = (el.textContent || "").toUpperCase().trim();
+                    return text === "NEXT" || text.includes("NEXT");
                 });
+                
+                if (!nextBtn) {
+                    const nextSpan = Array.from(doc.querySelectorAll('span')).find(el => 
+                        (el.textContent || "").toUpperCase().trim() === "NEXT"
+                    );
+                    if (nextSpan) {
+                        nextBtn = nextSpan.closest('a') || nextSpan.closest('button') || nextSpan;
+                    }
+                }
 
-                if (nextBtn && nextBtn.getAttribute('href')) {
-                    nextUrl = 'https://www.flipkart.com' + nextBtn.getAttribute('href');
+                let href = null;
+                if (nextBtn) {
+                    href = nextBtn.getAttribute('href');
+                    if (!href && nextBtn.tagName === 'SPAN') {
+                        const parentA = nextBtn.closest('a');
+                        if (parentA) href = parentA.getAttribute('href');
+                    }
+                }
+
+                if (href && !href.startsWith('javascript')) {
+                    nextUrl = 'https://www.flipkart.com' + href;
                     pageCount++;
                     // Polite delay
                     await new Promise(r => setTimeout(r, 2000));
